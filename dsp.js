@@ -54,19 +54,39 @@
     for (let i = n - 1; i > 0; i--) y[i] -= 0.97 * y[i - 1];   // 预加重
     for (let i = 0; i < n; i++) y[i] *= 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (n - 1));
     const a = lpc(y, 12); if (!a) return null;
-    // 在 LPC 包络上找峰
-    const N = 512, env = new Float64Array(N);
-    for (let k = 0; k < N; k++) {
-      const w = Math.PI * k / N; let re = 0, im = 0;
-      for (let j = 0; j < a.length; j++) { re += a[j] * Math.cos(w * j); im -= a[j] * Math.sin(w * j); }
-      env[k] = 1 / Math.hypot(re, im);
-    }
+    // 直接解 LPC 的极点，不在包络上找峰：高音/气声时 F1、F2 在包络上会并成一个峰，
+    // 找峰会把 F3 当成 F2（仪表上 1200↔2800 来回跳），极点还是分开的两个
     const out = [];
-    for (let k = 1; k < N - 1 && out.length < 2; k++) {
-      const f = fs / 2 * k / N;
-      if (f > 200 && f < 4000 && env[k] > env[k - 1] && env[k] >= env[k + 1]) out.push(f);
+    for (const [re, im] of roots(a)) {
+      if (im <= 0) continue;
+      const r = Math.hypot(re, im), f = Math.atan2(im, re) * fs / (2 * Math.PI), bw = -Math.log(r) * fs / Math.PI;
+      if (f > 200 && f < 4000 && bw < 600) out.push(f);
     }
-    return out.length === 2 ? out : null;
+    out.sort((u, v) => u - v);
+    return out.length >= 2 ? out.slice(0, 2) : null;
+  }
+
+  // 多项式 a[0] z^p + a[1] z^(p-1) + … + a[p] 的全部复根（Durand–Kerner），返回 [[实部, 虚部], …]
+  function roots(a) {
+    const p = a.length - 1, z = [];
+    for (let i = 0; i < p; i++) { const t = 2 * Math.PI * i / p + 0.4; z.push([0.9 * Math.cos(t), 0.9 * Math.sin(t)]); }
+    for (let it = 0; it < 200; it++) {
+      let moved = 0;
+      for (let i = 0; i < p; i++) {
+        const [zr, zi] = z[i];
+        let nr = 1, ni = 0;                       // Horner 求 A(z)
+        for (let j = 1; j <= p; j++) { const t = nr * zr - ni * zi + a[j]; ni = nr * zi + ni * zr; nr = t; }
+        let dr = 1, di = 0;                       // ∏ (z_i − z_j)
+        for (let j = 0; j < p; j++) if (j !== i) {
+          const ur = zr - z[j][0], ui = zi - z[j][1], t = dr * ur - di * ui; di = dr * ui + di * ur; dr = t;
+        }
+        const m = dr * dr + di * di; if (!m) continue;
+        const qr = (nr * dr + ni * di) / m, qi = (ni * dr - nr * di) / m;
+        z[i] = [zr - qr, zi - qi]; moved = Math.max(moved, Math.abs(qr) + Math.abs(qi));
+      }
+      if (moved < 1e-10) break;
+    }
+    return z;
   }
 
   const api = { pitch, formants };
